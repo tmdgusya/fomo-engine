@@ -1,0 +1,1559 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FOMO — 당신의 GPU가 지금 일하고 있습니다</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@300;500;700;900&family=Noto+Sans+KR:wght@300;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --accent: #ffb347;
+    --accent2: #6ee7ff;
+    --bg: #030308;
+    --fg: #eef2ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: auto; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'Noto Sans KR', sans-serif;
+    overflow-x: hidden;
+    cursor: none;
+  }
+  ::selection { background: var(--accent); color: #000; }
+
+  /* ---------- WebGL canvas ---------- */
+  #gl {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    display: block;
+    z-index: 0;
+  }
+
+  /* ---------- custom cursor ---------- */
+  #cursor {
+    position: fixed;
+    width: 14px; height: 14px;
+    border: 1.5px solid rgba(255,255,255,.9);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 9999;
+    transform: translate(-50%,-50%);
+    mix-blend-mode: difference;
+    transition: width .25s, height .25s, background .25s;
+  }
+  #cursor-dot {
+    position: fixed;
+    width: 4px; height: 4px;
+    background: var(--accent);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 9999;
+    transform: translate(-50%,-50%);
+  }
+  @media (hover: none) { #cursor, #cursor-dot { display: none; } body { cursor: auto; } }
+
+  /* ---------- loader ---------- */
+  #loader {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    transition: opacity .9s ease, visibility .9s;
+  }
+  #loader.done { opacity: 0; visibility: hidden; }
+  .loader-title {
+    font-family: 'Unbounded', sans-serif;
+    font-weight: 900;
+    font-size: clamp(28px, 5vw, 56px);
+    letter-spacing: .12em;
+    background: linear-gradient(90deg, var(--accent), #ff6b9d, var(--accent2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shimmer 2.2s linear infinite;
+    background-size: 200% 100%;
+  }
+  @keyframes shimmer { to { background-position: 200% 0; } }
+  .loader-bar-wrap {
+    width: min(420px, 70vw);
+    height: 2px;
+    background: rgba(255,255,255,.12);
+    overflow: hidden;
+    border-radius: 2px;
+  }
+  #loader-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    transition: width .2s ease;
+  }
+  #loader-status {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: rgba(238,242,255,.55);
+    letter-spacing: .08em;
+  }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    position: fixed;
+    top: 20px; left: 20px;
+    z-index: 100;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.7;
+    color: rgba(238,242,255,.75);
+    pointer-events: none;
+    user-select: none;
+  }
+  #fps-big {
+    font-size: 42px;
+    font-weight: 700;
+    color: #7dff9e;
+    line-height: 1;
+    text-shadow: 0 0 24px rgba(125,255,158,.45);
+  }
+  #fps-big.warn { color: #ffd27d; }
+  #fps-big.bad  { color: #ff7d7d; }
+  .hud-label { font-size: 10px; letter-spacing: .2em; color: rgba(238,242,255,.4); margin-bottom: 2px; }
+  #fps-graph {
+    margin: 8px 0 10px;
+    width: 180px; height: 36px;
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 4px;
+  }
+  .hud-row b { color: var(--accent2); font-weight: 700; }
+  #gpu-name { color: rgba(255,179,71,.9); max-width: 260px; }
+
+  /* ---------- scroll hint / progress ---------- */
+  #scroll-progress {
+    position: fixed;
+    top: 0; left: 0;
+    height: 2px;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 200;
+  }
+  #hint {
+    position: fixed;
+    bottom: 26px; left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: .3em;
+    color: rgba(238,242,255,.55);
+    animation: bob 2.4s ease-in-out infinite;
+    pointer-events: none;
+    transition: opacity .6s;
+  }
+  @keyframes bob { 0%,100% { transform: translate(-50%,0);} 50% { transform: translate(-50%,8px);} }
+
+  /* ---------- sections ---------- */
+  #scroll-space { height: 800vh; position: relative; z-index: 10; pointer-events: none; }
+  .panel {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 8vw;
+    opacity: 0;
+    visibility: hidden;
+    will-change: opacity, transform;
+  }
+  .kicker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    letter-spacing: .4em;
+    color: var(--accent);
+    margin-bottom: 18px;
+  }
+  .mega {
+    font-family: 'Unbounded', sans-serif;
+    font-weight: 900;
+    font-size: clamp(44px, 11vw, 150px);
+    line-height: .95;
+    letter-spacing: -.01em;
+    text-shadow: 0 0 80px rgba(110,231,255,.25);
+  }
+  .mega .stroke {
+    color: transparent;
+    -webkit-text-stroke: 1.5px rgba(238,242,255,.85);
+  }
+  .sub {
+    margin-top: 26px;
+    font-size: clamp(15px, 1.6vw, 20px);
+    font-weight: 300;
+    color: rgba(238,242,255,.72);
+    max-width: 560px;
+    line-height: 1.75;
+  }
+  .sub b { color: var(--accent2); font-weight: 700; }
+  .right { align-items: flex-end; text-align: right; }
+  .stat-grid {
+    display: flex; gap: clamp(24px, 5vw, 72px);
+    margin-top: 40px; flex-wrap: wrap;
+  }
+  .stat .num {
+    font-family: 'Unbounded', sans-serif;
+    font-weight: 700;
+    font-size: clamp(28px, 4.5vw, 58px);
+    color: var(--accent2);
+    text-shadow: 0 0 40px rgba(110,231,255,.4);
+  }
+  .stat .lbl {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: .2em;
+    color: rgba(238,242,255,.5);
+    margin-top: 6px;
+  }
+  .tech-list {
+    margin-top: 30px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(12px, 1.3vw, 15px);
+    line-height: 2.1;
+    color: rgba(238,242,255,.8);
+  }
+  .tech-list span { color: var(--accent); }
+  .center { align-items: center; text-align: center; }
+
+  #fallback {
+    position: fixed; inset: 0; z-index: 2000;
+    background: var(--bg);
+    display: none;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 40px;
+    font-size: 15px; line-height: 1.8;
+  }
+
+  /* ---------- 사운드 토글 ---------- */
+  #snd {
+    position: fixed; top: 20px; right: 20px; z-index: 300;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; letter-spacing: .2em;
+    color: rgba(238,242,255,.7);
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 4px;
+    padding: 8px 14px;
+    cursor: none;
+    transition: color .3s, border-color .3s;
+  }
+  #snd.on { color: #7dff9e; border-color: rgba(125,255,158,.4); }
+
+  /* ---------- 행성 추적 HUD 라벨 ---------- */
+  #labels { position: fixed; inset: 0; z-index: 90; pointer-events: none; overflow: hidden; }
+  .plabel {
+    position: absolute;
+    transform: translate(-50%, -130%);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; letter-spacing: .18em;
+    color: var(--accent2);
+    opacity: 0;
+    transition: opacity .35s;
+    white-space: nowrap;
+    text-align: center;
+    text-shadow: 0 0 12px rgba(110,231,255,.6);
+  }
+  .plabel::before {
+    content: ''; display: block;
+    width: 7px; height: 7px;
+    border: 1px solid var(--accent2);
+    transform: rotate(45deg);
+    margin: 0 auto 6px;
+  }
+  .plabel small {
+    display: block;
+    color: rgba(238,242,255,.5);
+    letter-spacing: .1em;
+    margin-top: 3px;
+  }
+
+  /* ---------- 키네틱 타이포 ---------- */
+  .mega .ch {
+    display: inline-block;
+    opacity: 0;
+    transform: translateY(115%) rotate(7deg);
+    transition: transform .8s cubic-bezier(.19,1,.22,1), opacity .5s ease;
+  }
+  .panel.on .mega .ch { opacity: 1; transform: translateY(0) rotate(0); }
+</style>
+</head>
+<body>
+
+<div id="fallback">
+  <div>
+    <div style="font-family:'Unbounded';font-size:32px;margin-bottom:16px;">GPU 없음?</div>
+    이 페이지는 WebGL2 없이는 의미가 없습니다.<br>크롬 최신 버전으로 다시 오세요. 그게 FOMO를 느끼는 유일한 방법입니다.
+  </div>
+</div>
+
+<canvas id="gl"></canvas>
+
+<div id="loader">
+  <div class="loader-title">FOMO.EXE</div>
+  <div class="loader-bar-wrap"><div id="loader-bar"></div></div>
+  <div id="loader-status">초기화 중…</div>
+</div>
+
+<div id="hud">
+  <div class="hud-label">RENDER // 실시간</div>
+  <div id="fps-big">—</div>
+  <canvas id="fps-graph" width="360" height="72"></canvas>
+  <div class="hud-row">draw calls <b id="hud-calls">0</b> · tris <b id="hud-tris">0</b></div>
+  <div class="hud-row">objects <b id="hud-objs">0</b> · DPR <b id="hud-dpr">1.00</b></div>
+  <div class="hud-row" id="gpu-name"></div>
+</div>
+
+<div id="scroll-progress"></div>
+<div id="hint">SCROLL ▾ 클릭하면 사운드 ON</div>
+<button id="snd">SOUND OFF</button>
+
+<div id="scroll-space">
+  <section class="panel" data-from="0.00" data-to="0.14">
+    <div class="kicker">WARNING // 과도한 기술력</div>
+    <h1 class="mega">FO<span class="stroke">MO</span><br>ENGINE</h1>
+    <p class="sub">이 페이지는 <b>당신의 GPU</b> 위에서 실시간으로 렌더링됩니다.
+      영상이 아닙니다. 프리렌더도 아닙니다. <b>전부 지금, 여기서</b> 계산되고 있습니다.</p>
+  </section>
+
+  <section class="panel right" data-from="0.16" data-to="0.30">
+    <div class="kicker">SCALE // 압도적 스케일</div>
+    <h2 class="mega" style="font-size:clamp(34px,6.5vw,84px);">숫자로<br>짓눌러보자</h2>
+    <div class="stat-grid">
+      <div class="stat"><div class="num" data-count="150000">0</div><div class="lbl">STARS / 별</div></div>
+      <div class="stat"><div class="num" data-count="60000">0</div><div class="lbl">ASTEROIDS / 소행성</div></div>
+      <div class="stat"><div class="num" data-count="24000">0</div><div class="lbl">DUST PARTICLES</div></div>
+    </div>
+  </section>
+
+  <section class="panel" data-from="0.32" data-to="0.46">
+    <div class="kicker">SHADER // GLSL</div>
+    <h2 class="mega" style="font-size:clamp(34px,6.5vw,84px);">태양은<br><span class="stroke">노이즈</span>다</h2>
+    <p class="sub">표면의 플라즈마는 <b>5-옥타브 FBM 노이즈</b>를 매 픽셀마다 계산한 결과물입니다.
+      텍스처 파일? 그런 거 없습니다. <b>수학이 그린 태양</b>입니다.</p>
+  </section>
+
+  <section class="panel right" data-from="0.48" data-to="0.62">
+    <div class="kicker">POST // HDR PIPELINE</div>
+    <h2 class="mega" style="font-size:clamp(34px,6.5vw,84px);">빛이<br>넘친다</h2>
+    <p class="sub"><b>Unreal Bloom + ACES Filmic Tonemapping + HDR 렌더 타겟.</b>
+      크로매틱 애버레이션과 필름 그레인까지, 전부 실시간 포스트 프로세싱입니다.</p>
+  </section>
+
+  <section class="panel" data-from="0.64" data-to="0.80">
+    <div class="kicker">STACK // 사용된 기술 전체</div>
+    <h2 class="mega" style="font-size:clamp(34px,6vw,78px);">전부 때려박음</h2>
+    <div class="tech-list">
+      <div><span>▸</span> WebGL2 · InstancedBufferGeometry · GPU 연산 궤도</div>
+      <div><span>▸</span> Custom GLSL — FBM 플라즈마 · 프레넬 대기권 · 트윙클 성운</div>
+      <div><span>▸</span> UnrealBloomPass · ACES Tonemapping · Chromatic Aberration</div>
+      <div><span>▸</span> 프로시저럴 텍스처 — 이미지 파일 0개, 전부 런타임 생성</div>
+      <div><span>▸</span> 프로시저럴 퍼플 네뷸러 돔 — 도메인 워핑 FBM + 먼지 레인</div>
+      <div><span>▸</span> Adaptive DPR 스케일링 — 60fps 방어 알고리즘 내장</div>
+      <div><span>▸</span> 스프링 물리 칼메라 · 스크롤 코레오그래피 · 패럴 랙스</div>
+    </div>
+  </section>
+
+  <section class="panel center" data-from="0.84" data-to="1.01">
+    <div class="kicker" style="color:var(--accent2)">FINALE</div>
+    <h2 class="mega" style="font-size:clamp(38px,8vw,110px);">아직도<br>FOMO 안 오나요?</h2>
+    <p class="sub" style="text-align:center">맨 위로 스크롤하면 태양계가 다시 펼쳐집니다.<br>
+      이 페이지의 소스는 <b>HTML 파일 단 하나</b>입니다.</p>
+  </section>
+</div>
+
+<div id="labels"></div>
+<div id="cursor"></div>
+<div id="cursor-dot"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ============================================================
+   0. 부트 / 로더
+============================================================ */
+const $ = (s) => document.querySelector(s);
+const loaderBar = $('#loader-bar');
+const loaderStatus = $('#loader-status');
+const setProgress = (p, msg) => {
+  loaderBar.style.width = `${Math.round(p * 100)}%`;
+  if (msg) loaderStatus.textContent = msg;
+};
+
+if (!window.WebGL2RenderingContext) { $('#fallback').style.display = 'flex'; throw new Error('no webgl2'); }
+
+setProgress(0.05, 'WebGL2 컨텍스트 확보 중…');
+
+/* ============================================================
+   1. 렌더러 / 씬 / 칼메라
+============================================================ */
+const canvas = $('#gl');
+const renderer = new THREE.WebGLRenderer({
+  canvas, antialias: true, powerPreference: 'high-performance', stencil: false
+});
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.info.autoReset = false; // composer 패스 합산 통계용
+
+let DPR = Math.min(window.devicePixelRatio || 1, 2);
+renderer.setPixelRatio(DPR);
+renderer.setSize(innerWidth, innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x020208);
+
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 4000);
+camera.position.set(0, 34, 120);
+
+// GPU 이름 뽑아서 HUD에 전시 (FOMO 포인트)
+try {
+  const gl = renderer.getContext();
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  $('#gpu-name').textContent = `GPU ▸ ${gpu}`;
+} catch (e) { /* 조용히 무시 */ }
+
+setProgress(0.15, 'GPU에 15만 개의 별을 심는 중…');
+
+/* ============================================================
+   2. 프로시저럴 텍스처 팩토리 (이미지 파일 0개)
+============================================================ */
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return [c, c.getContext('2d')];
+}
+// 간결한 value-noise (텍스처용)
+function hash2(x, y) {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  return hash2(xi, yi) * (1 - u) * (1 - v) +
+         hash2(xi + 1, yi) * u * (1 - v) +
+         hash2(xi, yi + 1) * (1 - u) * v +
+         hash2(xi + 1, yi + 1) * u * v;
+}
+function fbm2(x, y, oct = 5) {
+  let a = 0, amp = 0.5, f = 1;
+  for (let i = 0; i < oct; i++) { a += amp * vnoise(x * f, y * f); amp *= 0.5; f *= 2.03; }
+  return a;
+}
+
+function planetTexture({ base, spots, bands = false, crack = false }) {
+  const W = 512, H = 256;
+  const [c, ctx] = makeCanvas(W, H);
+  const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const u = x / W, v = y / H;
+      let n;
+      if (bands) {
+        // 가스 giant: 위도 밴드 + 난류
+        const turb = fbm2(u * 6, v * 6, 4) * 0.55;
+        n = fbm2(u * 3 + turb, v * 14, 4);
+      } else if (crack) {
+        n = Math.abs(fbm2(u * 8, v * 8, 5) - 0.5) * 2.0; // 균열 느낌
+        n = Math.pow(1 - n, 3);
+      } else {
+        n = fbm2(u * 7, v * 7, 6);
+      }
+      const t = Math.min(1, Math.max(0, n));
+      const i = (y * W + x) * 4;
+      img.data[i]     = base[0] + (spots[0] - base[0]) * t;
+      img.data[i + 1] = base[1] + (spots[1] - base[1]) * t;
+      img.data[i + 2] = base[2] + (spots[2] - base[2]) * t;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  return tex;
+}
+
+function ringTexture() {
+  const [c, ctx] = makeCanvas(512, 16);
+  const g = ctx.createLinearGradient(0, 0, 512, 0);
+  for (let i = 0; i <= 40; i++) {
+    const t = i / 40;
+    const a = 0.12 + 0.75 * Math.abs(Math.sin(t * 34 + fbm2(t * 9, 3, 3) * 8)) * (1 - Math.abs(t - 0.45) * 1.4);
+    g.addColorStop(t, `rgba(215,200,175,${Math.max(0, a).toFixed(3)})`);
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 512, 16);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function glowSprite(inner, outer) {
+  const [c, ctx] = makeCanvas(256, 256);
+  const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+  g.addColorStop(0, inner);
+  g.addColorStop(0.35, outer);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+}
+
+setProgress(0.28, '프로시저럴 텍스처 합성 중…');
+
+/* ============================================================
+   3. 별 150,000 — GPU 포인트 스프라이트 + 트윙클
+============================================================ */
+const STAR_COUNT = 150000;
+const starGeo = new THREE.BufferGeometry();
+{
+  const pos = new Float32Array(STAR_COUNT * 3);
+  const seed = new Float32Array(STAR_COUNT * 3); // size, phase, hue
+  for (let i = 0; i < STAR_COUNT; i++) {
+    // 구면 셸에 균일 분포
+    const r = 900 + Math.random() * 1800;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    pos[i * 3]     = r * Math.sin(ph) * Math.cos(th);
+    pos[i * 3 + 1] = r * Math.cos(ph);
+    pos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+    seed[i * 3]     = 0.6 + Math.pow(Math.random(), 3) * 2.6;
+    seed[i * 3 + 1] = Math.random() * Math.PI * 2;
+    seed[i * 3 + 2] = Math.random();
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  starGeo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 3));
+}
+const starMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 } },
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  vertexShader: /* glsl */`
+    attribute vec3 aSeed;
+    uniform float uTime;
+    varying float vTw;
+    varying vec3 vCol;
+    varying float vSpike;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      float tw = 0.72 + 0.28 * sin(uTime * (0.6 + aSeed.z * 2.4) + aSeed.y);
+      vTw = tw;
+      // 온도별 색: 시안(참고 이미지 코어) / 흰 별 / 주황 핀스타
+      vec3 cold = vec3(0.55, 0.90, 1.0);
+      vec3 mid  = vec3(1.0);
+      vec3 warm = vec3(1.0, 0.72, 0.42);
+      vCol = aSeed.z < 0.30 ? cold : (aSeed.z < 0.72 ? mid : warm);
+      // 상위 밝은 별만 회절 스파이크 (허블 사진 그 십자)
+      vSpike = smoothstep(2.9, 3.3, aSeed.x);
+      gl_PointSize = aSeed.x * tw * (700.0 / -mv.z) * (1.0 + vSpike * 3.0);
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vTw;
+    varying vec3 vCol;
+    varying float vSpike;
+    void main() {
+      vec2 d = gl_PointCoord - 0.5;
+      float core = smoothstep(0.5, 0.0, length(d));
+      core *= core;
+      // 십자 회절 스파이크
+      float sx = smoothstep(0.028, 0.0, abs(d.y)) * smoothstep(0.5, 0.02, abs(d.x));
+      float sy = smoothstep(0.028, 0.0, abs(d.x)) * smoothstep(0.5, 0.02, abs(d.y));
+      float spike = (sx + sy) * vSpike;
+      float a = clamp(core + spike * 0.6, 0.0, 1.0);
+      // 밝은 별 코어만 살짝 HDR — 나머지는 톤 다운
+      vec3 col = vCol * vTw * (0.5 + vSpike * 1.5);
+      gl_FragColor = vec4(col * a, a);
+    }`
+});
+scene.add(new THREE.Points(starGeo, starMat));
+
+/* ============================================================
+   4. 태양 — 커스텀 GLSL FBM 플라즈마 셰이더
+============================================================ */
+const NOISE_GLSL = /* glsl */`
+  vec3 mod289(vec3 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
+  vec4 mod289(vec4 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
+  vec4 permute(vec4 x){ return mod289(((x*34.0)+1.0)*x); }
+  vec4 taylorInvSqrt(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
+  float snoise(vec3 v){
+    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i  = floor(v + dot(v, C.yyy));
+    vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz);
+    vec3 l = 1.0 - g;
+    vec3 i1 = min(g.xyz, l.zxy);
+    vec3 i2 = max(g.xyz, l.zxy);
+    vec3 x1 = x0 - i1 + C.xxx;
+    vec3 x2 = x0 - i2 + C.yyy;
+    vec3 x3 = x0 - D.yyy;
+    i = mod289(i);
+    vec4 p = permute(permute(permute(
+              i.z + vec4(0.0, i1.z, i2.z, 1.0))
+            + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+            + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 0.142857142857;
+    vec3 ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    vec4 x_ = floor(j * ns.z);
+    vec4 y_ = floor(j - 7.0 * x_);
+    vec4 x = x_ * ns.x + ns.yyyy;
+    vec4 y = y_ * ns.x + ns.yyyy;
+    vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4(x.xy, y.xy);
+    vec4 b1 = vec4(x.zw, y.zw);
+    vec4 s0 = floor(b0)*2.0 + 1.0;
+    vec4 s1 = floor(b1)*2.0 + 1.0;
+    vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+    vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+    vec3 p0 = vec3(a0.xy, h.x);
+    vec3 p1 = vec3(a0.zw, h.y);
+    vec3 p2 = vec3(a1.xy, h.z);
+    vec3 p3 = vec3(a1.zw, h.w);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+  }
+  float fbm(vec3 p){
+    float a = 0.0, amp = 0.55;
+    for(int i = 0; i < 5; i++){
+      a += amp * snoise(p);
+      p *= 2.04;
+      amp *= 0.5;
+    }
+    return a;
+  }
+`;
+
+const sunUniforms = { uTime: { value: 0 } };
+const sun = new THREE.Mesh(
+  new THREE.SphereGeometry(10, 96, 96),
+  new THREE.ShaderMaterial({
+    uniforms: sunUniforms,
+    vertexShader: /* glsl */`
+      varying vec3 vPos;
+      varying vec3 vNrm;
+      void main(){
+        vPos = position;
+        vNrm = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: /* glsl */`
+      uniform float uTime;
+      varying vec3 vPos;
+      varying vec3 vNrm;
+      ${NOISE_GLSL}
+      void main(){
+        vec3 p = normalize(vPos);
+        // 대류 + 시간 흐름, 두 스케일의 도메인 워핑
+        float n1 = fbm(p * 3.0 + vec3(uTime * 0.05, uTime * 0.03, 0.0));
+        float n2 = fbm(p * 7.5 - vec3(0.0, uTime * 0.07, uTime * 0.04) + n1 * 1.4);
+        float plasma = clamp(n1 * 0.6 + n2 * 0.6 + 0.55, 0.0, 1.4);
+        vec3 deep = vec3(0.65, 0.08, 0.0);
+        vec3 mid  = vec3(1.0, 0.45, 0.05);
+        vec3 hot  = vec3(1.0, 0.95, 0.55);
+        vec3 col = mix(deep, mid, smoothstep(0.1, 0.75, plasma));
+        col = mix(col, hot, smoothstep(0.75, 1.15, plasma));
+        // 림 플레어(프레넬)
+        float rim = pow(1.0 - abs(dot(normalize(vNrm), vec3(0.0, 0.0, 1.0))), 2.2);
+        col += vec3(1.0, 0.5, 0.15) * rim * 1.6;
+        col *= 2.2; // HDR로 밀어올려서 블룸이 물게
+        gl_FragColor = vec4(col, 1.0);
+      }`
+  })
+);
+scene.add(sun);
+
+// 코로나 글로우 스프라이트 (2겹)
+const coronaTex = glowSprite('rgba(255,220,150,1)', 'rgba(255,120,20,0.35)');
+const corona = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: coronaTex, color: 0xffc873, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.55
+}));
+corona.scale.setScalar(38);
+scene.add(corona);
+const corona2 = corona.clone();
+corona2.material = corona.material.clone();
+corona2.material.opacity = 0.08;
+corona2.scale.setScalar(90);
+scene.add(corona2);
+
+// 아나모픽 스트릭 (시네마틱 가로 플레어)
+const streak = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowSprite('rgba(255,200,120,0.9)', 'rgba(255,140,40,0.0)'),
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.15
+}));
+streak.scale.set(120, 1.8, 1);
+scene.add(streak);
+
+// 태양광 (씬 유일 라이트) — decay 0: 외행성까지 균일하게 (스타일라이즈드)
+const sunLight = new THREE.PointLight(0xfff2dd, 2.6, 0, 0);
+scene.add(sunLight);
+scene.add(new THREE.AmbientLight(0x445588, 0.9));
+scene.add(new THREE.HemisphereLight(0x8a7bff, 0x1a0b2e, 0.55)); // 성운 반사광 느낌의 필
+
+/* ============================================================
+   4.5 성운 돔 — 참고 이미지 그 퍼플 네뷸러, 프로시저럴
+============================================================ */
+const nebula = new THREE.Mesh(
+  new THREE.SphereGeometry(2600, 48, 48),
+  new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    side: THREE.BackSide,
+    depthWrite: false,
+    vertexShader: /* glsl */`
+      varying vec3 vDir;
+      void main(){
+        vDir = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: /* glsl */`
+      uniform float uTime;
+      varying vec3 vDir;
+      ${NOISE_GLSL}
+      float fbm4(vec3 p){
+        float a = 0.0, amp = 0.55;
+        for(int i = 0; i < 4; i++){ a += amp * snoise(p); p *= 2.1; amp *= 0.5; }
+        return a;
+      }
+      void main(){
+        vec3 d = normalize(vDir);
+        // 은하수 밴드: 기울어진 평면으로 pow 압축
+        vec3 bandN = normalize(vec3(0.22, 1.0, 0.38));
+        float band = pow(1.0 - abs(dot(d, bandN)), 2.8);
+        // 대규모 마스크: 하늘 대부분은 어둡게, 성운은 패치처럼
+        float mask = smoothstep(0.30, 0.72, fbm4(d * 0.85 + vec3(3.3, 1.1, 5.7)) * 0.5 + 0.5);
+        // 저주파 도메인 워핑 구름 — 참고 이미지처럼 크고 부드럽게
+        vec3 p = d * 1.35;
+        vec3 warp = vec3(
+          fbm4(p + vec3(1.7, 9.2, 3.1)),
+          fbm4(p + vec3(8.3, 2.8, 5.6)),
+          fbm4(p + vec3(4.1, 5.9, 7.7))
+        );
+        float cloud = fbm4(p * 1.1 + warp * 0.9 + vec3(uTime * 0.004, 0.0, uTime * 0.002));
+        cloud = cloud * 0.5 + 0.5;
+        // 어두운 먼지 레인: 리지드 노이즈로 구름을 갈라놓기
+        float lane = fbm4(p * 2.2 + warp * 2.0);
+        lane = pow(1.0 - abs(lane), 3.5);
+        float neb = smoothstep(0.30, 1.0, cloud) * (0.35 + band * 1.1);
+        neb *= (0.35 + mask * 0.65);
+        neb *= (1.0 - lane * 0.8);
+        neb *= 0.92; // 블룸 임계(1.0) 아래 — 성운은 빛나는 게 아니라 물드는 것
+        // 팔레트: DESIGN.md 램프 — 네온 말고 더스티
+        vec3 deep    = vec3(0.010, 0.003, 0.038);
+        vec3 violet  = vec3(0.100, 0.020, 0.220);
+        vec3 magenta = vec3(0.460, 0.130, 0.580);
+        vec3 pink    = vec3(0.720, 0.380, 0.700);
+        vec3 col = deep;
+        col = mix(col, violet,  smoothstep(0.04, 0.40, neb));
+        col = mix(col, magenta, smoothstep(0.36, 0.78, neb));
+        col = mix(col, pink,    smoothstep(0.70, 1.05, neb * (0.65 + cloud * 0.7)));
+        // 밴드 코어의 시안 발광 (참고 이미지 하단의 청록 성운)
+        float cyan = smoothstep(0.62, 1.05, neb * band * 1.6);
+        col += vec3(0.14, 0.48, 0.66) * cyan * 0.4;
+        gl_FragColor = vec4(col, 1.0);
+      }`
+  })
+);
+nebula.renderOrder = -1;
+scene.add(nebula);
+
+// 전경 성운 미스트 — 패럴 랙스용 볼류메트릭 레이어 (스프라이트 5장)
+const mists = [];
+{
+  const mistTex = glowSprite('rgba(255,255,255,1)', 'rgba(255,255,255,0)');
+  const defs = [
+    { c: 0x7a2bd8, p: [ 420,  90, -350], s: 780, o: 0.055 },
+    { c: 0xc86bff, p: [-500, -60, -180], s: 640, o: 0.042 },
+    { c: 0x5a1ea8, p: [-260, 200,  420], s: 860, o: 0.070 },
+    { c: 0x2a6a9f, p: [ 300, -180, 480], s: 560, o: 0.045 },
+    { c: 0xa13ec2, p: [ -60, -320, -520], s: 700, o: 0.055 },
+  ];
+  for (const d of defs) {
+    const m = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: mistTex, color: d.c, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false, opacity: d.o
+    }));
+    m.position.set(...d.p);
+    m.scale.setScalar(d.s);
+    scene.add(m);
+    mists.push({ m, base: m.position.clone(), ph: Math.random() * Math.PI * 2 });
+  }
+}
+
+setProgress(0.42, '태양 점화 중…');
+
+/* ============================================================
+   5. 행성 8개 + 대기권(프레넬) + 토성 고리 + 궤도선
+============================================================ */
+const PLANETS = [
+  { name: '수성', r: 1.1,  d: 18,  speed: 0.900, base: [138,124,110], spots: [80,70,62],              tilt: 0.03 },
+  { name: '금성', r: 1.9,  d: 25,  speed: 0.620, base: [222,184,120], spots: [180,130,80], bands: true, tilt: 0.05 },
+  { name: '지구', r: 2.0,  d: 33,  speed: 0.480, base: [30,70,150],  spots: [40,140,80],              tilt: 0.41, atmo: 0x6ec8ff },
+  { name: '화성', r: 1.5,  d: 40,  speed: 0.380, base: [188,84,50],  spots: [120,50,30],              tilt: 0.44 },
+  { name: '목성', r: 6.2,  d: 56,  speed: 0.210, base: [205,170,130], spots: [150,95,60], bands: true,  tilt: 0.06 },
+  { name: '토성', r: 5.4,  d: 74,  speed: 0.160, base: [225,200,150], spots: [185,150,105], bands: true, tilt: 0.47, ring: true },
+  { name: '천왕성', r: 3.4, d: 90,  speed: 0.110, base: [150,215,225], spots: [95,170,190], crack: true, tilt: 1.71, atmo: 0x9fe8ff },
+  { name: '해왕성', r: 3.2, d: 104, speed: 0.085, base: [50,90,200],  spots: [25,50,140], bands: true,  tilt: 0.49, atmo: 0x5f8fff },
+];
+const planets = [];
+const planetGroup = new THREE.Group();
+scene.add(planetGroup);
+
+const atmoVert = /* glsl */`
+  varying vec3 vNrm;
+  void main(){
+    vNrm = normalize(normalMatrix * normal);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }`;
+const atmoFrag = /* glsl */`
+  uniform vec3 uColor;
+  varying vec3 vNrm;
+  void main(){
+    // clamp 필수: 음수 밑 pow는 NaN → 깜빡임의 주범
+    float intensity = pow(clamp(0.72 - dot(vNrm, vec3(0.0, 0.0, 1.0)), 0.0, 1.0), 4.0);
+    gl_FragColor = vec4(uColor, 1.0) * intensity * 1.15;
+  }`;
+
+const ringTex = ringTexture();
+
+for (const p of PLANETS) {
+  const pivot = new THREE.Group();
+  pivot.rotation.y = Math.random() * Math.PI * 2;
+  planetGroup.add(pivot);
+
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(p.r, 48, 48),
+    new THREE.MeshStandardMaterial({
+      map: planetTexture(p), roughness: 0.85, metalness: 0.05
+    })
+  );
+  mesh.position.x = p.d;
+  mesh.rotation.z = p.tilt;
+  pivot.add(mesh);
+
+  if (p.atmo) {
+    const atmo = new THREE.Mesh(
+      new THREE.SphereGeometry(p.r * 1.28, 48, 48),
+      new THREE.ShaderMaterial({
+        uniforms: { uColor: { value: new THREE.Color(p.atmo) } },
+        vertexShader: atmoVert, fragmentShader: atmoFrag,
+        side: THREE.BackSide, transparent: true,
+        blending: THREE.AdditiveBlending, depthWrite: false
+      })
+    );
+    atmo.position.x = p.d;
+    pivot.add(atmo);
+  }
+
+  if (p.ring) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(p.r * 1.45, p.r * 2.5, 128, 1),
+      new THREE.MeshBasicMaterial({
+        map: ringTex, side: THREE.DoubleSide, transparent: true,
+        depthWrite: false, opacity: 0.95
+      })
+    );
+    ring.position.x = p.d;
+    ring.rotation.x = Math.PI / 2 - p.tilt;
+    pivot.add(ring);
+  }
+
+  // 궤도선
+  const orbitPts = [];
+  for (let i = 0; i <= 256; i++) {
+    const a = (i / 256) * Math.PI * 2;
+    orbitPts.push(new THREE.Vector3(Math.cos(a) * p.d, 0, Math.sin(a) * p.d));
+  }
+  const orbit = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(orbitPts),
+    new THREE.LineBasicMaterial({ color: 0x3a4668, transparent: true, opacity: 0.15 })
+  );
+  planetGroup.add(orbit);
+
+  planets.push({ ...p, pivot, mesh, angle: Math.random() * Math.PI * 2 });
+}
+
+setProgress(0.58, '소행성 6만 개 궤도에 투입 중…');
+
+/* ============================================================
+   6. 소행성 벨트 60,000 — 인스턴스드 + GPU 궤도 연산
+   (CPU 업데이트 0, 전부 버텍스 셰이더에서 궤도 계산)
+============================================================ */
+const AST_COUNT = 60000;
+const astGeo = new THREE.InstancedBufferGeometry();
+{
+  const base = new THREE.IcosahedronGeometry(1, 0);
+  astGeo.index = base.index;
+  astGeo.attributes.position = base.attributes.position;
+  astGeo.attributes.normal = base.attributes.normal;
+
+  const orbit = new Float32Array(AST_COUNT * 4); // radius, speed, phase, ySpread
+  const misc  = new Float32Array(AST_COUNT * 3); // scale, rotSpeed, shade
+  for (let i = 0; i < AST_COUNT; i++) {
+    const band = Math.random();
+    const radius = 44 + band * 10 + (Math.random() - 0.5) * 4.5; // 화성-목성 사이
+    orbit[i * 4]     = radius;
+    orbit[i * 4 + 1] = (0.16 + Math.random() * 0.12) * (46 / radius); // 케플러풍 감속
+    orbit[i * 4 + 2] = Math.random() * Math.PI * 2;
+    orbit[i * 4 + 3] = (Math.random() - 0.5) * 2.2;
+    misc[i * 3]     = 0.04 + Math.pow(Math.random(), 3.5) * 0.16;
+    misc[i * 3 + 1] = (Math.random() - 0.5) * 4.0;
+    misc[i * 3 + 2] = 0.40 + Math.random() * 0.55;
+  }
+  astGeo.setAttribute('aOrbit', new THREE.InstancedBufferAttribute(orbit, 4));
+  astGeo.setAttribute('aMisc', new THREE.InstancedBufferAttribute(misc, 3));
+  astGeo.instanceCount = AST_COUNT;
+}
+const astMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 } },
+  vertexShader: /* glsl */`
+    attribute vec4 aOrbit;
+    attribute vec3 aMisc;
+    uniform float uTime;
+    varying float vLight;
+    varying float vShade;
+    void main(){
+      float angle = aOrbit.z + uTime * aOrbit.y;
+      vec3 center = vec3(cos(angle) * aOrbit.x, aOrbit.w, sin(angle) * aOrbit.x);
+      // 자전 (저비용 로드리게스 근사)
+      float t = uTime * aMisc.y;
+      float c = cos(t), s = sin(t);
+      vec3 p = position * aMisc.x;
+      p = vec3(p.x * c - p.z * s, p.y, p.x * s + p.z * c);
+      float c2 = cos(t * 0.7), s2 = sin(t * 0.7);
+      p = vec3(p.x, p.y * c2 - p.z * s2, p.y * s2 + p.z * c2);
+      vec3 world = center + p;
+      // 태양(원점) 기준 램버트
+      vec3 nrm = normalize(p / max(aMisc.x, 1e-4));
+      vec3 L = normalize(-world);
+      vLight = max(dot(nrm, L), 0.0) * 0.9 + 0.12;
+      vShade = aMisc.z;
+      gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vLight;
+    varying float vShade;
+    void main(){
+      vec3 rock = vec3(0.34, 0.315, 0.29) * vShade;
+      gl_FragColor = vec4(rock * vLight, 1.0);
+    }`
+});
+const astMesh = new THREE.Mesh(astGeo, astMat);
+astMesh.frustumCulled = false; // 인스턴스는 셰이더에서 궤도 계산 → 바욘딩 구 무의미
+scene.add(astMesh);
+
+/* ============================================================
+   7. 성간 먼지 24,000 — 칼메라 주위 부유
+============================================================ */
+const DUST_COUNT = 24000;
+const dustGeo = new THREE.BufferGeometry();
+{
+  const pos = new Float32Array(DUST_COUNT * 3);
+  const seed = new Float32Array(DUST_COUNT * 2);
+  for (let i = 0; i < DUST_COUNT; i++) {
+    pos[i * 3]     = (Math.random() - 0.5) * 560;
+    pos[i * 3 + 1] = (Math.random() - 0.5) * 300;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * 560;
+    seed[i * 2]     = 0.35 + Math.random() * 1.3;
+    seed[i * 2 + 1] = Math.random() * Math.PI * 2;
+  }
+  dustGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  dustGeo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 2));
+}
+const dustMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 } },
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  vertexShader: /* glsl */`
+    attribute vec2 aSeed;
+    uniform float uTime;
+    varying float vA;
+    void main(){
+      vec3 p = position;
+      p.y += sin(uTime * 0.12 + aSeed.y) * 4.0;
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      float dist = -mv.z;
+      vA = smoothstep(280.0, 60.0, dist) * 0.18;
+      gl_PointSize = aSeed.x * (140.0 / dist);
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vA;
+    void main(){
+      vec2 d = gl_PointCoord - 0.5;
+      float a = smoothstep(0.5, 0.0, length(d)) * vA;
+      gl_FragColor = vec4(vec3(0.75, 0.82, 1.0) * 0.6, a);
+    }`
+});
+scene.add(new THREE.Points(dustGeo, dustMat));
+
+/* ============================================================
+   8. 혜성 — 타원 궤도 + 페이딩 꼬리
+============================================================ */
+const cometGroup = new THREE.Group();
+scene.add(cometGroup);
+const cometHead = new THREE.Mesh(
+  new THREE.SphereGeometry(0.5, 16, 16),
+  new THREE.MeshBasicMaterial({ color: 0xcfeeff })
+);
+const cometGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowSprite('rgba(200,235,255,1)', 'rgba(90,150,255,0.3)'),
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+}));
+cometGlow.scale.setScalar(6);
+cometGroup.add(cometHead, cometGlow);
+
+const TRAIL = 180;
+const trailPos = new Float32Array(TRAIL * 3);
+const trailCol = new Float32Array(TRAIL * 3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setAttribute('color', new THREE.BufferAttribute(trailCol, 3));
+const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+}));
+trail.frustumCulled = false; // CPU 갱신 궤적 — 바욘딩 구가 매 프레임 낡음
+scene.add(trail);
+
+function cometPos(t, out) {
+  const a = t * 0.32;
+  out.set(Math.cos(a) * 78, Math.sin(t * 0.21) * 10 + 6, Math.sin(a) * 46);
+  return out;
+}
+
+setProgress(0.72, '포스트 프로세싱 체인 조립 중…');
+
+/* ============================================================
+   9. 포스트 프로세싱 — HDR 블룸 + 커스텀 그레인/CA/비넷
+============================================================ */
+const size = new THREE.Vector2();
+renderer.getSize(size);
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(size.clone(), 0.6, 0.5, 1.0);
+composer.addPass(bloom);
+
+// 스크린스페이스 갓레이 — 태양 스크린 좌표로 56탭 래디얼 블러, HDR 밝은 픽셀만 발광
+const godrayPass = new ShaderPass({
+  uniforms: {
+    tDiffuse: { value: null },
+    uSunPos: { value: new THREE.Vector2(0.5, 0.5) },
+    uWeight: { value: 0 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform vec2 uSunPos;
+    uniform float uWeight;
+    varying vec2 vUv;
+    void main(){
+      vec3 base = texture2D(tDiffuse, vUv).rgb;
+      vec2 delta = (uSunPos - vUv) * 0.34 / 56.0;
+      vec2 suv = vUv;
+      float illum = 1.0;
+      vec3 acc = vec3(0.0);
+      for (int i = 0; i < 56; i++) {
+        suv += delta;
+        vec3 s = texture2D(tDiffuse, suv).rgb;
+        float lum = smoothstep(0.92, 1.65, dot(s, vec3(0.2126, 0.7152, 0.0722)));
+        acc += s * lum * illum;
+        illum *= 0.93;
+      }
+      gl_FragColor = vec4(base + acc * uWeight * 0.02, 1.0);
+    }`
+});
+composer.addPass(godrayPass);
+composer.addPass(new OutputPass()); // 여기서 ACES 톤맵 + sRGB — 진짜 HDR 파이프라인
+
+const FinalShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uTime: { value: 0 },
+    uCA: { value: 0.00035 }, // chromatic aberration
+    uVig: { value: 1.15 },
+    uMouse: { value: new THREE.Vector2(0.5, 0.5) },
+    uLens: { value: 0 },
+    uWarp: { value: 0 },
+    uAspect: { value: 1 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform float uTime, uCA, uVig, uLens, uWarp, uAspect;
+    uniform vec2 uMouse;
+    varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
+    void main(){
+      // 커서 중력 렌징 — 커서 주변 시공간이 휘어진다
+      vec2 m = vUv - uMouse;
+      m.x *= uAspect;
+      float md = length(m);
+      float lens = uLens * 0.24 * exp(-md * md * 14.0);
+      vec2 uv = mix(vUv, uMouse, lens);
+
+      vec2 dir = uv - 0.5;
+      float r2 = dot(dir, dir);
+      // 크로매틱 애버레이션 (가장자리로 갈수록 강화)
+      vec2 off = dir * r2 * uCA * 40.0;
+      vec3 col;
+      col.r = texture2D(tDiffuse, uv + off).r;
+      col.g = texture2D(tDiffuse, uv).g;
+      col.b = texture2D(tDiffuse, uv - off).b;
+      // 스크롤 워프 — 빨리 넘기면 공간이 늘어난다
+      float w = clamp(uWarp, 0.0, 1.0);
+      if (w > 0.003) {
+        vec3 zb = vec3(0.0);
+        for (int i = 0; i < 8; i++) {
+          float t = float(i) / 7.0;
+          zb += texture2D(tDiffuse, uv - dir * t * w * 0.14).rgb;
+        }
+        col = mix(col, zb / 8.0, clamp(w * 1.4, 0.0, 0.8));
+      }
+      // 시네마틱 그레이드: 채도 + 대비 + 바이올렛 섀도 리프트
+      float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(lum), col, 1.14);
+      col = (col - 0.5) * 1.06 + 0.5;
+      col += vec3(0.012, 0.0, 0.030) * (1.0 - lum);
+      // 비넷
+      col *= smoothstep(0.95, 0.35, r2 * uVig);
+      // 필름 그레인
+      col += (hash(uv * 913.0 + fract(uTime) * 7.0) - 0.5) * 0.028;
+      gl_FragColor = vec4(col, 1.0);
+    }`
+};
+const finalPass = new ShaderPass(FinalShader);
+composer.addPass(finalPass);
+
+setProgress(0.85, '칼메라 코레오그래피 리허설 중…');
+
+/* ============================================================
+   10. 칼메라 코레오그래피 — 스크롤 키프레임 + 스프링
+============================================================ */
+const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+const KEYS = [
+  { t: 0.00, pos: V3(0, 30, 128),   look: V3(0, 0, 0) },      // 히어로: 태양계 전경
+  { t: 0.15, pos: V3(-26, 10, 74),  look: V3(0, 2, 0) },      // 태양 접근
+  { t: 0.30, pos: V3(6, 4, 48),     look: V3(0, 0, 0) },      // 벨트 스밈 직전, 태양 클로즈업
+  { t: 0.46, pos: V3(47, 2.5, 8),   look: V3(47, 0, -30) },   // 소행성 벨트 한가울래
+  { t: 0.60, pos: V3(30, 5, 22),    look: V3(33, 0, 0) },     // 지구 궤도 부근
+  { t: 0.74, pos: V3(60, 8, 46),    look: V3(74, 0, 0) },     // 토성 바라보기
+  { t: 0.88, pos: V3(0, 100, 90),   look: V3(489, -7, 90) },  // 성운 응시: 밴드 수평 관통 시야
+  { t: 1.00, pos: V3(0, 16, 150),   look: V3(0, 0, 0) },      // 피날레: 다시 전경
+];
+function sampleKeys(t) {
+  let i = 0;
+  while (i < KEYS.length - 2 && KEYS[i + 1].t < t) i++;
+  const a = KEYS[i], b = KEYS[i + 1];
+  const span = Math.max(1e-5, b.t - a.t);
+  let u = Math.min(1, Math.max(0, (t - a.t) / span));
+  u = u * u * (3 - 2 * u); // smoothstep easing
+  return {
+    pos: a.pos.clone().lerp(b.pos, u),
+    look: a.look.clone().lerp(b.look, u),
+  };
+}
+
+// 스프링 스묨딩
+let scrollTarget = 0, scrollSmooth = 0;
+let prevSmooth = 0, warp = 0, warpTarget = 0;
+let mouseVel = 0, prevMx = 0, prevMy = 0, lens = 0, lastPanel = -1;
+const mouse = { x: 0, y: 0, sx: 0, sy: 0 };
+addEventListener('scroll', () => {
+  const max = document.documentElement.scrollHeight - innerHeight;
+  scrollTarget = max > 0 ? (scrollY / max) : 0;
+}, { passive: true });
+addEventListener('mousemove', (e) => {
+  mouse.x = (e.clientX / innerWidth - 0.5) * 2;
+  mouse.y = (e.clientY / innerHeight - 0.5) * 2;
+}, { passive: true });
+
+/* ============================================================
+   11. HUD — FPS + 스파크라인 + 통계
+============================================================ */
+const fpsEl = $('#fps-big');
+const graph = $('#fps-graph').getContext('2d');
+const fpsHist = new Array(90).fill(0);
+let frames = 0, lastFpsT = performance.now(), fps = 0;
+let slowTime = 0;
+
+function updateHud(now) {
+  frames++;
+  if (now - lastFpsT >= 500) {
+    fps = Math.round(frames * 1000 / (now - lastFpsT));
+    frames = 0; lastFpsT = now;
+    fpsEl.textContent = fps;
+    fpsEl.className = fps >= 50 ? '' : fps >= 30 ? 'warn' : 'bad';
+    fpsHist.push(fps); fpsHist.shift();
+
+    // 스파크라인
+    graph.clearRect(0, 0, 360, 72);
+    graph.strokeStyle = 'rgba(125,255,158,.9)';
+    graph.lineWidth = 2;
+    graph.beginPath();
+    fpsHist.forEach((f, i) => {
+      const x = (i / (fpsHist.length - 1)) * 360;
+      const y = 70 - Math.min(1, f / 120) * 66;
+      i ? graph.lineTo(x, y) : graph.moveTo(x, y);
+    });
+    graph.stroke();
+    // 60fps 가이드라인
+    graph.strokeStyle = 'rgba(255,255,255,.15)';
+    graph.lineWidth = 1;
+    const y60 = 70 - 0.5 * 66;
+    graph.beginPath(); graph.moveTo(0, y60); graph.lineTo(360, y60); graph.stroke();
+
+    $('#hud-calls').textContent = renderer.info.render.calls;
+    $('#hud-tris').textContent = (renderer.info.render.triangles / 1e6).toFixed(2) + 'M';
+    $('#hud-objs').textContent = (STAR_COUNT + AST_COUNT + DUST_COUNT).toLocaleString('ko-KR');
+    $('#hud-dpr').textContent = DPR.toFixed(2);
+  }
+}
+
+// Adaptive DPR: 60fps 못 지키면 해상도 낮춰서 프레임 방어
+function adaptQuality(dt) {
+  if (fps > 0 && fps < 47) slowTime += dt; else slowTime = Math.max(0, slowTime - dt);
+  if (slowTime > 2 && DPR > 0.85) {
+    DPR = Math.max(0.85, DPR - 0.25);
+    renderer.setPixelRatio(DPR);
+    composer.setPixelRatio(DPR);
+    onResize();
+    slowTime = 0;
+  }
+}
+
+/* ============================================================
+   12. 패널 페이드 + 카운터 + 커서
+============================================================ */
+const panels = [...document.querySelectorAll('.panel')];
+
+// 키네틱 타이포: .mega 텍스트를 글자 단위로 분해 (중첩 span/BR 보존)
+for (const mega of document.querySelectorAll('.mega')) {
+  let i = 0;
+  const split = (node) => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType === 3) {
+        const frag = document.createDocumentFragment();
+        for (const ch of child.textContent) {
+          if (ch === ' ') { frag.appendChild(document.createTextNode(' ')); continue; }
+          const s = document.createElement('span');
+          s.className = 'ch';
+          s.textContent = ch;
+          s.style.transitionDelay = `${i++ * 26}ms`;
+          frag.appendChild(s);
+        }
+        node.replaceChild(frag, child);
+      } else if (child.tagName !== 'BR') split(child);
+    }
+  };
+  split(mega);
+}
+
+// 행성 추적 HUD 라벨
+const labelDefs = new Map([
+  ['지구', '유일하게 프론트엔드 하는 행성'],
+  ['목성', '대적점 350년째 진행 중'],
+  ['토성', '고리 128 segments 실시간 렌더'],
+  ['해왕성', '풍속 2,100 km/h'],
+]);
+const labelEls = new Map();
+const labelsBox = $('#labels');
+for (const p of planets) {
+  if (!labelDefs.has(p.name)) continue;
+  const el = document.createElement('div');
+  el.className = 'plabel';
+  el.innerHTML = `${p.name}${''}<small>${labelDefs.get(p.name)}</small>`;
+  labelsBox.appendChild(el);
+  labelEls.set(p, el);
+}
+function updatePanels(t) {
+  for (const el of panels) {
+    const from = parseFloat(el.dataset.from), to = parseFloat(el.dataset.to);
+    const fade = 0.035;
+    const o = t < from - fade || t > to + fade ? 0
+      : t < from ? (t - from + fade) / fade
+      : t > to ? 1 - (t - to) / fade : 1;
+    el.style.opacity = o;
+    el.style.visibility = o <= 0 ? 'hidden' : 'visible';
+    el.style.transform = `translateY(${(1 - o) * 40}px)`;
+    el.classList.toggle('on', o > 0.12);
+    if (o > 0.5) {
+      // 카운터 애니메이션
+      for (const n of el.querySelectorAll('[data-count]')) {
+        const target = +n.dataset.count;
+        const cur = +n.textContent.replace(/[^0-9]/g, '') || 0;
+        if (cur < target) n.textContent = Math.min(target, Math.ceil(cur + target * 0.06)).toLocaleString('ko-KR');
+      }
+    }
+  }
+  $('#scroll-progress').style.width = `${t * 100}%`;
+  $('#hint').style.opacity = t < 0.02 ? 1 : 0;
+}
+
+const cursor = $('#cursor'), cursorDot = $('#cursor-dot');
+addEventListener('mousemove', (e) => {
+  cursorDot.style.left = e.clientX + 'px';
+  cursorDot.style.top = e.clientY + 'px';
+}, { passive: true });
+
+/* ============================================================
+   12.5 프로시저럴 오디오 — 파일 0개, 전부 오실레이터
+============================================================ */
+let AC = null, master = null, lpF = null, bpF = null, audioOn = false;
+function initAudio() {
+  if (AC) { if (AC.state === 'suspended') AC.resume(); return; }
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  master = AC.createGain(); master.gain.value = 0; master.connect(AC.destination);
+  // 딥 드론: 디튠된 쏘우 2 + 서브 사인 → 로우패스
+  lpF = AC.createBiquadFilter(); lpF.type = 'lowpass'; lpF.frequency.value = 200; lpF.Q.value = 0.7;
+  const droneG = AC.createGain(); droneG.gain.value = 0.05;
+  lpF.connect(droneG); droneG.connect(master);
+  const mk = (type, f, det = 0) => { const o = AC.createOscillator(); o.type = type; o.frequency.value = f; o.detune.value = det; o.connect(lpF); o.start(); };
+  mk('sawtooth', 55); mk('sawtooth', 55, 9); mk('sine', 36.71);
+  // 브라운 노이즈 → 밴드패스 (스크롤 속도로 스윕)
+  const len = AC.sampleRate * 2;
+  const buf = AC.createBuffer(1, len, AC.sampleRate);
+  const ch = buf.getChannelData(0);
+  let last = 0;
+  for (let i = 0; i < len; i++) { const w = Math.random() * 2 - 1; last = (last + 0.02 * w) / 1.02; ch[i] = last * 3.2; }
+  const noise = AC.createBufferSource(); noise.buffer = buf; noise.loop = true;
+  bpF = AC.createBiquadFilter(); bpF.type = 'bandpass'; bpF.frequency.value = 320; bpF.Q.value = 1.1;
+  const noiseG = AC.createGain(); noiseG.gain.value = 0.014;
+  noise.connect(bpF); bpF.connect(noiseG); noiseG.connect(master); noise.start();
+}
+function setAudio(on) {
+  audioOn = on;
+  $('#snd').textContent = on ? 'SOUND ON' : 'SOUND OFF';
+  $('#snd').classList.toggle('on', on);
+  if (!AC) return;
+  master.gain.cancelScheduledValues(AC.currentTime);
+  master.gain.linearRampToValueAtTime(on ? 0.85 : 0, AC.currentTime + 0.4);
+}
+function thump() {
+  if (!AC || !audioOn) return;
+  const t = AC.currentTime;
+  const o = AC.createOscillator(); const g = AC.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(68, t);
+  o.frequency.exponentialRampToValueAtTime(26, t + 0.55);
+  g.gain.setValueAtTime(0.5, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.65);
+}
+const bootAudio = (e) => { initAudio(); if (!e.target.closest || !e.target.closest('#snd')) setAudio(true); };
+addEventListener('pointerdown', bootAudio, { once: true });
+addEventListener('keydown', bootAudio, { once: true });
+$('#snd').addEventListener('click', (e) => { e.stopPropagation(); initAudio(); setAudio(!audioOn); });
+
+/* ============================================================
+   13. 메인 루프
+============================================================ */
+const clock = new THREE.Clock();
+const camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
+const tmpV = new THREE.Vector3();
+const tmpV2 = new THREE.Vector3();
+const tmpV3 = new THREE.Vector3();
+const camDirV = new THREE.Vector3();
+const toSunV = new THREE.Vector3();
+let elapsed = 0;
+
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  elapsed += dt;
+  const now = performance.now();
+
+  // 스크롤 & 마우스 스프링 스묨딩
+  scrollSmooth += (scrollTarget - scrollSmooth) * (1 - Math.exp(-dt * 4.2));
+  mouse.sx += (mouse.x - mouse.sx) * (1 - Math.exp(-dt * 5));
+  mouse.sy += (mouse.y - mouse.sy) * (1 - Math.exp(-dt * 5));
+
+  // 스크롤 속도 → 워프 + FOV 킥 (가속 페달)
+  const sv = Math.abs(scrollSmooth - prevSmooth) / Math.max(dt, 1e-4);
+  prevSmooth = scrollSmooth;
+  warpTarget = Math.min(1, sv * 0.55);
+  warp += (warpTarget - warp) * (1 - Math.exp(-dt * 3.5));
+  camera.fov = 58 + warp * 16;
+  camera.updateProjectionMatrix();
+
+  // 마우스 속도 → 렌징 강도
+  mouseVel += ((Math.abs(mouse.sx - prevMx) + Math.abs(mouse.sy - prevMy)) / Math.max(dt, 1e-4) - mouseVel) * (1 - Math.exp(-dt * 4));
+  prevMx = mouse.sx; prevMy = mouse.sy;
+  lens += (Math.min(1, 0.3 + mouseVel * 2.2) - lens) * (1 - Math.exp(-dt * 3));
+
+  // 칼메라
+  const { pos, look } = sampleKeys(scrollSmooth);
+  camPos.copy(pos);
+  camLook.copy(look);
+  // 패럴 랙스 + 미세 부유
+  camPos.x += mouse.sx * 3.2 + Math.sin(elapsed * 0.4) * 0.6;
+  camPos.y += -mouse.sy * 2.2 + Math.sin(elapsed * 0.7) * 0.4;
+  camera.position.lerp(camPos, 1 - Math.exp(-dt * 6));
+  tmpV.copy(camLook).sub(camera.position).normalize();
+  camera.lookAt(camLook);
+
+  // 갓레이: 태양 스크린 투영 + 가중치 (바라볼수록, 가까울수록)
+  tmpV2.set(0, 0, 0).project(camera);
+  godrayPass.uniforms.uSunPos.value.set(tmpV2.x * 0.5 + 0.5, tmpV2.y * 0.5 + 0.5);
+  camera.getWorldDirection(camDirV);
+  toSunV.copy(camera.position).negate().normalize();
+  const facing = Math.max(0, camDirV.dot(toSunV));
+  const distFade = THREE.MathUtils.clamp(1.3 - camera.position.length() / 260, 0, 1);
+  godrayPass.uniforms.uWeight.value = facing * facing * distFade;
+
+  // 파이널 패스: 렌징/워프 유니폼
+  finalPass.uniforms.uMouse.value.set(mouse.sx * 0.5 + 0.5, 0.5 - mouse.sy * 0.5);
+  finalPass.uniforms.uLens.value = lens;
+  finalPass.uniforms.uWarp.value = warp;
+
+  // 행성 추적 라벨
+  const showLabels = scrollSmooth > 0.04;
+  for (const [p, el] of labelEls) {
+    p.mesh.getWorldPosition(tmpV3);
+    const d = camera.position.distanceTo(tmpV3);
+    tmpV3.project(camera);
+    const on = showLabels && tmpV3.z < 1 && Math.abs(tmpV3.x) < 0.93 && Math.abs(tmpV3.y) < 0.9 && d < 150;
+    if (on) {
+      el.style.opacity = THREE.MathUtils.clamp(1.6 - d / 110, 0, 1).toFixed(2);
+      el.style.left = `${(tmpV3.x * 0.5 + 0.5) * 100}%`;
+      el.style.top = `${(-tmpV3.y * 0.5 + 0.5) * 100}%`;
+    } else {
+      el.style.opacity = 0;
+    }
+  }
+
+  // 유니폼 시간
+  sunUniforms.uTime.value = elapsed;
+  starMat.uniforms.uTime.value = elapsed;
+  astMat.uniforms.uTime.value = elapsed;
+  dustMat.uniforms.uTime.value = elapsed;
+  finalPass.uniforms.uTime.value = elapsed;
+
+  // 태양 자전 & 코로나 맥동
+  sun.rotation.y += dt * 0.05;
+  const pulse = 1 + Math.sin(elapsed * 1.7) * 0.03 + Math.sin(elapsed * 4.3) * 0.012;
+  corona.scale.setScalar(38 * pulse);
+  corona2.scale.setScalar(90 * (2 - pulse) * 0.98);
+  streak.material.opacity = 0.14 + Math.sin(elapsed * 1.3) * 0.04;
+  nebula.material.uniforms.uTime.value = elapsed;
+  // 성운 미스트 드리프트 (패럴 랙스)
+  for (const { m, base, ph } of mists) {
+    m.position.set(
+      base.x + Math.sin(elapsed * 0.05 + ph) * 26,
+      base.y + Math.sin(elapsed * 0.037 + ph * 1.7) * 18,
+      base.z + Math.cos(elapsed * 0.043 + ph) * 26
+    );
+  }
+
+  // 행성 공전/자전
+  for (const p of planets) {
+    p.angle += dt * p.speed * 0.35;
+    p.pivot.rotation.y = p.angle;
+    p.mesh.rotation.y += dt * 0.5;
+  }
+
+  // 혜성 — 꼬리는 과거 시간 샘플링 (프레임레이트 무관 균일 간격)
+  cometPos(elapsed, cometGroup.position);
+  for (let i = 0; i < TRAIL; i++) {
+    cometPos(elapsed - i * 0.045, tmpV3);
+    trailPos[i * 3] = tmpV3.x;
+    trailPos[i * 3 + 1] = tmpV3.y;
+    trailPos[i * 3 + 2] = tmpV3.z;
+    const f = 1 - i / TRAIL;
+    trailCol[i * 3] = 0.5 * f * f; trailCol[i * 3 + 1] = 0.75 * f * f; trailCol[i * 3 + 2] = f * f;
+  }
+  trailGeo.attributes.position.needsUpdate = true;
+  trailGeo.attributes.color.needsUpdate = true;
+
+  updatePanels(scrollSmooth);
+
+  // 섹션 전환 서브베이스 쿵
+  let curPanel = -1;
+  panels.forEach((el, i) => { if (parseFloat(el.style.opacity) > 0.5) curPanel = i; });
+  if (lastPanel >= 0 && curPanel >= 0 && curPanel !== lastPanel) thump();
+  lastPanel = curPanel;
+
+  // 오디오 필터 스윕 (스크롤 속도 연동)
+  if (AC && audioOn) {
+    lpF.frequency.value = 190 + Math.min(1, warp * 1.6) * 780;
+    bpF.frequency.value = 300 + Math.min(1, warp * 1.6) * 1900;
+  }
+  updateHud(now);
+  adaptQuality(dt);
+
+  renderer.info.reset();
+  composer.render();
+  requestAnimationFrame(tick);
+}
+
+/* ============================================================
+   14. 리사이즈 / 커서 루프 / 시작
+============================================================ */
+function onResize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  finalPass.uniforms.uAspect.value = innerWidth / innerHeight;
+}
+addEventListener('resize', onResize);
+onResize();
+
+(function cursorLoop() {
+  cursor.style.left = cursor.style.left || '0px';
+  requestAnimationFrame(() => {
+    cursor.style.transition = 'transform .12s ease-out';
+    cursor.style.transform = `translate(${mouse.sx * innerWidth / 2 + innerWidth / 2 - 7}px, ${mouse.sy * innerHeight / 2 + innerHeight / 2 - 7}px)`;
+    cursorLoop();
+  });
+})();
+
+setProgress(1, '완료. 태양계에 진입합니다.');
+setTimeout(() => {
+  $('#loader').classList.add('done');
+  document.body.style.cursor = 'none';
+}, 450);
+
+tick();
+</script>
+</body>
+</html>
